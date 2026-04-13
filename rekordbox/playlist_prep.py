@@ -128,6 +128,19 @@ def iter_unsupported_files(root: Path) -> Iterable[Path]:
             yield path
 
 
+def remove_empty_directories(root: Path) -> int:
+    removed = 0
+    directories = sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True)
+    for path in directories:
+        try:
+            path.rmdir()
+            removed += 1
+            print(f"Removed empty directory {path}.")
+        except OSError:
+            continue
+    return removed
+
+
 def probe_audio(path: Path, ffprobe_bin: str) -> AudioMetadata:
     command = [
         ffprobe_bin,
@@ -345,7 +358,7 @@ def convert_flac_files(
     return converted
 
 
-def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> tuple[int, int]:
+def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> tuple[int, int, int]:
     deleted = 0
     renamed = 0
     aif_files = sorted(iter_audio_files(root, {".aif"}))
@@ -354,7 +367,6 @@ def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> tuple[in
 
     if not aif_files and not unsupported_files and not candidates:
         print("No files found for deletion review.")
-        return deleted, renamed
 
     for path in aif_files:
         destination = path.with_suffix(".aiff")
@@ -413,7 +425,11 @@ def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> tuple[in
     if deleted == 0:
         print("Deletion review completed with no files deleted.")
 
-    return deleted, renamed
+    removed_directories = remove_empty_directories(root)
+    if removed_directories == 0:
+        print("No empty directories were removed.")
+
+    return deleted, renamed, removed_directories
 
 
 def deletion_reason(path: Path, metadata: AudioMetadata) -> str | None:
@@ -468,10 +484,8 @@ def main() -> int:
         print("Starting deletion-review phase...")
 
     if args.phase in {"all", "delete"}:
-        deleted, renamed = review_deletions(root, args.ffprobe, args.yes)
-        print(
-            f"Deletion-review phase complete. Deleted {deleted} file(s) and renamed {renamed} .aif file(s)."
-        )
+        deleted, renamed, removed_directories = review_deletions(root, args.ffprobe, args.yes)
+        print(f"Deletion-review phase complete. Deleted {deleted} file(s), renamed {renamed} .aif file(s), and removed {removed_directories} empty directorie(s).")
 
     return 0
 

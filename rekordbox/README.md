@@ -25,6 +25,7 @@
 - Deletes files whose extensions are not `.wav`, `.aiff`, `.mp3`, or `.flac`.
 - Flags `.mp3` files with bitrate below `320000` bps.
 - Flags `.wav` and `.aiff` files with sample rate above `48000` Hz.
+- Removes directories that are empty after the deletion-review phase finishes.
 
 ## Requirements
 
@@ -116,6 +117,7 @@ playlist_prep "/path/to/audio" --yes-convert --yes
 - Sample-rate checks are only applied to WAV and AIFF files.
 - `.aif` files are renamed to `.aiff` during deletion review unless the target `.aiff` file already exists.
 - Files with extensions other than `.wav`, `.aiff`, `.mp3`, and `.flac` are reviewed for deletion without using `ffprobe`.
+- Empty directories left behind after deletion review are removed automatically.
 - Metadata retention during FLAC to AIFF conversion is best-effort. Native AIFF tags are limited, so some fields may only survive in the AIFF ID3 chunk.
 - The script always compares source and converted tags. If differences are found, it keeps both the original FLAC and the new AIFF and reports the mismatches.
 - The metadata comparison ignores a small set of tool-generated fields such as `encoder`, `encoded_by`, `software`, and `creation_time`.
@@ -169,3 +171,5 @@ That can mean either:
 Files can now match the deletion rules either because they are unsupported file types or because supported files exceeded the bitrate/sample-rate thresholds.
 
 Files with the `.aif` extension are handled separately and renamed to `.aiff` instead of being deleted.
+
+Directories are only removed when they are empty after all rename and deletion operations are complete.
