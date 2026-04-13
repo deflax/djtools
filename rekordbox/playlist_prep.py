@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import TypedDict
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".flac", ".mp3", ".wav", ".aif", ".aiff"}
-AIFF_EXTENSIONS = {".aif", ".aiff"}
+SUPPORTED_RETAINED_EXTENSIONS = {".flac", ".mp3", ".wav", ".aiff"}
 MAX_MP3_BITRATE = 320_000
 MAX_SAMPLE_RATE = 48_000
 IGNORED_METADATA_KEYS = {
@@ -64,7 +63,7 @@ class TagPayload(TypedDict, total=False):
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert FLAC files to AIFF in place, then review low-bitrate MP3 and high-sample-rate WAV/AIFF files."
+            "Convert FLAC files to AIFF in place, then review unsupported files, low-bitrate MP3 files, and high-sample-rate WAV/AIFF files."
         )
     )
     _ = parser.add_argument(
@@ -120,6 +119,12 @@ def iter_audio_files(root: Path, suffixes: Iterable[str]) -> Iterable[Path]:
     wanted = {suffix.lower() for suffix in suffixes}
     for path in root.rglob("*"):
         if path.is_file() and path.suffix.lower() in wanted:
+            yield path
+
+
+def iter_unsupported_files(root: Path) -> Iterable[Path]:
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix.lower() not in SUPPORTED_RETAINED_EXTENSIONS:
             yield path
 
 
@@ -340,13 +345,49 @@ def convert_flac_files(
     return converted
 
 
-def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> int:
+def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> tuple[int, int]:
     deleted = 0
-    candidates = sorted(iter_audio_files(root, {".mp3", ".wav", ".aif", ".aiff"}))
+    renamed = 0
+    aif_files = sorted(iter_audio_files(root, {".aif"}))
+    unsupported_files = sorted(iter_unsupported_files(root))
+    candidates = sorted(iter_audio_files(root, {".mp3", ".wav", ".aiff"}))
 
-    if not candidates:
-        print("No MP3/WAV/AIFF files found for deletion review.")
-        return deleted
+    if not aif_files and not unsupported_files and not candidates:
+        print("No files found for deletion review.")
+        return deleted, renamed
+
+    for path in aif_files:
+        destination = path.with_suffix(".aiff")
+        reason = f"rename {path.suffix.lower()} to .aiff"
+
+        if destination.exists():
+            print(f"Skipping rename for {path}: destination already exists at {destination}.")
+            continue
+
+        if assume_yes or confirm_rename(path, destination):
+            try:
+                _ = path.rename(destination)
+                renamed += 1
+                print(f"Renamed {path} -> {destination}.")
+            except OSError as error:
+                print(f"Failed to rename {path} to {destination}: {error}", file=sys.stderr)
+        else:
+            print(f"Kept {path} ({reason}).")
+
+    for path in unsupported_files:
+        suffix = path.suffix.lower() or "[no extension]"
+        reason = (
+            f"extension {suffix} is not one of .wav, .aiff, .mp3, or .flac"
+        )
+        if assume_yes or confirm_deletion(path, reason):
+            try:
+                path.unlink()
+                deleted += 1
+                print(f"Deleted {path} ({reason}).")
+            except OSError as error:
+                print(f"Failed to delete {path}: {error}", file=sys.stderr)
+        else:
+            print(f"Kept {path} ({reason}).")
 
     for path in candidates:
         try:
@@ -372,7 +413,7 @@ def review_deletions(root: Path, ffprobe_bin: str, assume_yes: bool) -> int:
     if deleted == 0:
         print("Deletion review completed with no files deleted.")
 
-    return deleted
+    return deleted, renamed
 
 
 def deletion_reason(path: Path, metadata: AudioMetadata) -> str | None:
@@ -381,7 +422,7 @@ def deletion_reason(path: Path, metadata: AudioMetadata) -> str | None:
     if suffix == ".mp3" and metadata.bit_rate is not None and metadata.bit_rate < MAX_MP3_BITRATE:
         return f"MP3 bitrate is {metadata.bit_rate} bps, below 320000 bps"
 
-    if suffix in {".wav", *AIFF_EXTENSIONS} and metadata.sample_rate is not None and metadata.sample_rate > MAX_SAMPLE_RATE:
+    if suffix in {".wav", ".aiff"} and metadata.sample_rate is not None and metadata.sample_rate > MAX_SAMPLE_RATE:
         return f"sample rate is {metadata.sample_rate} Hz, above 48000 Hz"
 
     return None
@@ -389,6 +430,11 @@ def deletion_reason(path: Path, metadata: AudioMetadata) -> str | None:
 
 def confirm_deletion(path: Path, reason: str) -> bool:
     prompt = f"Delete {path} ({reason})? [y/N]: "
+    return input(prompt).strip().lower() in {"y", "yes"}
+
+
+def confirm_rename(source: Path, destination: Path) -> bool:
+    prompt = f"Rename {source} to {destination}? [y/N]: "
     return input(prompt).strip().lower() in {"y", "yes"}
 
 
@@ -422,8 +468,10 @@ def main() -> int:
         print("Starting deletion-review phase...")
 
     if args.phase in {"all", "delete"}:
-        deleted = review_deletions(root, args.ffprobe, args.yes)
-        print(f"Deletion-review phase complete. Deleted {deleted} file(s).")
+        deleted, renamed = review_deletions(root, args.ffprobe, args.yes)
+        print(
+            f"Deletion-review phase complete. Deleted {deleted} file(s) and renamed {renamed} .aif file(s)."
+        )
 
     return 0
 
