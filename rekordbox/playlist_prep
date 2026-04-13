@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+
+while [ -L "$SOURCE" ]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  TARGET="$(readlink "$SOURCE")"
+  if [[ "$TARGET" != /* ]]; then
+    SOURCE="$SCRIPT_DIR/$TARGET"
+  else
+    SOURCE="$TARGET"
+  fi
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/playlist_prep.py"
+
+if [ ! -f "$PYTHON_SCRIPT" ]; then
+  printf 'Could not find playlist_prep.py next to launcher: %s\n' "$PYTHON_SCRIPT" >&2
+  exit 1
+fi
+
+exec python3 "$PYTHON_SCRIPT" "$@"

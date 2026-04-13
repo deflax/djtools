@@ -36,7 +36,20 @@ Both `ffmpeg` and `ffprobe` must be available in your `PATH`, unless you pass cu
 
 1. Make sure Python 3 is installed.
 2. Install `ffmpeg`, which also provides `ffprobe` in most distributions.
-3. Put `audio_cleanup.py` anywhere you want to run it from, or call it with an absolute path.
+3. Keep `playlist_prep.py` and the `playlist_prep` launcher in the same directory.
+4. Make the launcher executable:
+
+```bash
+chmod +x playlist_prep
+```
+
+5. Optional: symlink the launcher into `/usr/local/bin` so you can run it from anywhere:
+
+```bash
+ln -s "/full/path/to/playlist_prep" /usr/local/bin/playlist_prep
+```
+
+You can also run the Python script directly with an absolute path if you prefer.
 
 You can verify the external tools are available with:
 
@@ -50,37 +63,37 @@ ffprobe -version
 Run both phases in order:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio"
+playlist_prep "/path/to/audio"
 ```
 
 Run only the conversion phase:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --phase convert
+playlist_prep "/path/to/audio" --phase convert
 ```
 
 Run only the deletion-review phase:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --phase delete
+playlist_prep "/path/to/audio" --phase delete
 ```
 
 Skip conversion prompts:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --yes-convert
+playlist_prep "/path/to/audio" --yes-convert
 ```
 
 Skip deletion prompts:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --yes
+playlist_prep "/path/to/audio" --yes
 ```
 
 Skip both conversion and deletion prompts:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --yes-convert --yes
+playlist_prep "/path/to/audio" --yes-convert --yes
 ```
 
 ## Command-line options
@@ -112,7 +125,7 @@ If the script exits immediately saying a required tool was not found, install `f
 You can also point to custom binaries:
 
 ```bash
-python3 audio_cleanup.py "/path/to/audio" --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/custom/bin/ffprobe"
+playlist_prep "/path/to/audio" --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/custom/bin/ffprobe"
 ```
 
 ### A FLAC file is skipped
