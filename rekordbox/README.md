@@ -20,7 +20,7 @@
 
 - Recursively finds `.aiff` files when `--down` is selected.
 - Prompts before each in-place normalization by default.
-- Normalizes AIFF files to 16-bit / 48000 Hz when their bit depth is above 16-bit, their sample rate is above 48000 Hz, or either value cannot be inspected.
+- Normalizes AIFF files to 16-bit and at most 48000 Hz only when their inspected bit depth is above 16-bit or their inspected sample rate is above 48000 Hz.
 - Writes a temporary AIFF output first and replaces the original only after a successful regular output is produced and inspected.
 
 ### Clean review
@@ -82,7 +82,7 @@ Convert FLAC and WAV files to AIFF:
 playlist_prep "/path/to/audio" --aiff
 ```
 
-Normalize high-resolution AIFF files to 16-bit / 48000 Hz in place:
+Normalize high-resolution AIFF files to 16-bit / at most 48000 Hz in place:
 
 ```bash
 playlist_prep "/path/to/audio" --down
@@ -99,6 +99,8 @@ Strip ReplayGain metadata tags:
 ```bash
 playlist_prep "/path/to/audio" --strip-replaygain
 ```
+
+Use `--aiff` for FLAC/WAV source folders. Use `--down` only when the folder already contains AIFF files that need reducing from above 16-bit or above 48000 Hz; `--aiff` does not touch files that are already `.aiff`.
 
 Run multiple operations in order:
 
@@ -122,7 +124,7 @@ playlist_prep "/path/to/audio" --aiff --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/
 
 - `root` - root directory to scan recursively. Defaults to the current directory.
 - `--aiff` - convert `.flac` and `.wav` files to `.aiff` in the same directory.
-- `--down` - normalize `.aiff` files above 16-bit or 48000 Hz, or with unknown bit depth/sample rate, to 16-bit / 48000 Hz in place.
+- `--down` - normalize `.aiff` files above 16-bit or 48000 Hz to 16-bit and at most 48000 Hz in place.
 - `--clean` - review unwanted extensions, `.aif` renames, and empty directories.
 - `--strip-replaygain` - remove ReplayGain metadata tags from supported audio files without re-encoding audio.
 - `--ffmpeg` - path to the `ffmpeg` executable.
@@ -136,8 +138,9 @@ playlist_prep "/path/to/audio" --aiff --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/
 - The script always compares source and converted tags for FLAC conversions. If differences are found, it keeps both the original FLAC and the new AIFF and reports the mismatches.
 - WAV metadata verification is best-effort. If useful tags can be read, they are compared before the original WAV is removed.
 - The metadata comparison ignores a small set of tool-generated fields such as `encoder`, `encoded_by`, `software`, and `creation_time`.
+- `--aiff` is usually enough when your inputs are FLAC or WAV. `--down` is a separate cleanup pass for AIFF files that were already AIFF before conversion started.
 - Downconversion uses a temporary output file and replaces the original AIFF only after successful output is produced and `ffprobe` confirms its bit depth and sample rate.
-- AIFF files with unknown bit depth or sample rate are treated as downconversion candidates, but the replacement output must still be verifiable.
+- AIFF files are skipped by `--down` unless `ffprobe` reports bit depth or sample rate above the target.
 - ReplayGain stripping removes tags whose names are `REPLAYGAIN` or begin with `REPLAYGAIN_` / `REPLAYGAIN-`, case-insensitively.
 - ReplayGain stripping copies audio streams instead of re-encoding them.
 - If `ffprobe` cannot read a file, the script reports the error and moves on.

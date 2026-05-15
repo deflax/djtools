@@ -82,7 +82,7 @@ def parse_args() -> Config:
     _ = parser.add_argument(
         "--down",
         action="store_true",
-        help="Normalize .aiff files above 16-bit or 48000 Hz to 16-bit / 48000 Hz in place.",
+        help="Normalize .aiff files above 16-bit or 48000 Hz to 16-bit and at most 48000 Hz in place.",
     )
     _ = parser.add_argument(
         "--clean",
@@ -203,6 +203,24 @@ def parse_int(value: object) -> int | None:
         return None
 
 
+def pcm_codec_bits(codec_name: str | None) -> int | None:
+    if codec_name is None:
+        return None
+
+    if codec_name.startswith("pcm_s16"):
+        return 16
+    if codec_name.startswith("pcm_s24"):
+        return 24
+    if codec_name.startswith("pcm_s32"):
+        return 32
+
+    return None
+
+
+def effective_bits_per_sample(metadata: AudioMetadata) -> int | None:
+    return metadata.bits_per_sample or pcm_codec_bits(metadata.codec_name)
+
+
 def string_arg(values: dict[str, object], key: str, default: str) -> str:
     value = values.get(key)
     return value if isinstance(value, str) else default
@@ -311,7 +329,8 @@ def compare_tags(source: dict[str, str], destination: dict[str, str]) -> list[st
 
 
 def choose_pcm_codec(metadata: AudioMetadata) -> str:
-    if metadata.bits_per_sample and metadata.bits_per_sample > 16:
+    bits_per_sample = effective_bits_per_sample(metadata)
+    if bits_per_sample and bits_per_sample > 16:
         return "pcm_s24be"
     return "pcm_s16be"
 
@@ -486,27 +505,61 @@ def clean_files(root: Path, assume_yes: bool) -> tuple[int, int, int]:
 
 def downconvert_reason(metadata: AudioMetadata) -> str | None:
     reasons: list[str] = []
-    if metadata.bits_per_sample is None:
-        reasons.append("bit depth is unknown")
-    elif metadata.bits_per_sample > TARGET_BITS_PER_SAMPLE:
-        reasons.append(f"bit depth is {metadata.bits_per_sample}-bit")
-    if metadata.sample_rate is None:
-        reasons.append("sample rate is unknown")
-    elif metadata.sample_rate > MAX_SAMPLE_RATE:
+    bits_per_sample = effective_bits_per_sample(metadata)
+    if bits_per_sample is not None and bits_per_sample > TARGET_BITS_PER_SAMPLE:
+        reasons.append(f"bit depth is {bits_per_sample}-bit")
+    if metadata.sample_rate is not None and metadata.sample_rate > MAX_SAMPLE_RATE:
         reasons.append(f"sample rate is {metadata.sample_rate} Hz")
 
     if not reasons:
         return None
 
-    return ", ".join(reasons) + " above 16-bit / 48000 Hz target"
+    return ", ".join(reasons) + " above 16-bit / 48000 Hz maximum"
+
+
+def downconvert_command(
+    source: Path,
+    destination: Path,
+    metadata: AudioMetadata,
+    ffmpeg_bin: str,
+) -> list[str]:
+    command = [
+        ffmpeg_bin,
+        "-nostdin",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-c:a",
+        "pcm_s16be",
+    ]
+    if metadata.sample_rate is not None and metadata.sample_rate > MAX_SAMPLE_RATE:
+        command.extend(["-ar", str(MAX_SAMPLE_RATE)])
+    command.extend(
+        [
+            "-map_metadata",
+            "0",
+            "-write_id3v2",
+            "1",
+            "-id3v2_version",
+            "4",
+            str(destination),
+        ]
+    )
+    return command
 
 
 def verify_downconverted_output(path: Path, ffprobe_bin: str) -> None:
     metadata = probe_audio(path, ffprobe_bin)
-    if metadata.bits_per_sample is None:
+    bits_per_sample = effective_bits_per_sample(metadata)
+    if bits_per_sample is None:
         raise RuntimeError("downconverted output bit depth could not be verified")
-    if metadata.bits_per_sample > TARGET_BITS_PER_SAMPLE:
-        raise RuntimeError(f"downconverted output is still {metadata.bits_per_sample}-bit")
+    if bits_per_sample > TARGET_BITS_PER_SAMPLE:
+        raise RuntimeError(f"downconverted output is still {bits_per_sample}-bit")
     if metadata.sample_rate is None:
         raise RuntimeError("downconverted output sample rate could not be verified")
     if metadata.sample_rate > MAX_SAMPLE_RATE:
@@ -545,29 +598,7 @@ def downconvert_aiff_files(
 
         try:
             temporary_output = create_temporary_aiff_path(path)
-            command = [
-                ffmpeg_bin,
-                "-nostdin",
-                "-y",
-                "-i",
-                str(path),
-                "-map",
-                "0:a:0",
-                "-vn",
-                "-sn",
-                "-dn",
-                "-c:a",
-                "pcm_s16be",
-                "-ar",
-                str(MAX_SAMPLE_RATE),
-                "-map_metadata",
-                "0",
-                "-write_id3v2",
-                "1",
-                "-id3v2_version",
-                "4",
-                str(temporary_output),
-            ]
+            command = downconvert_command(path, temporary_output, metadata, ffmpeg_bin)
             _ = subprocess.run(command, check=True)
 
             ensure_regular_output(temporary_output, "downconversion")
@@ -575,7 +606,7 @@ def downconvert_aiff_files(
             verify_downconverted_output(temporary_output, ffprobe_bin)
             _ = temporary_output.replace(path)
             downconverted += 1
-            print(f"Downconverted {path} to 16-bit / 48000 Hz AIFF.")
+            print(f"Downconverted {path} to 16-bit / at most 48000 Hz AIFF.")
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, RuntimeError) as error:
             if temporary_output is not None and temporary_output.exists():
                 temporary_output.unlink()
@@ -700,7 +731,7 @@ def confirm_aiff_conversion(source: Path, destination: Path) -> bool:
 
 
 def confirm_downconvert(path: Path, reason: str) -> bool:
-    prompt = f"Downconvert {path} in place to 16-bit / 48000 Hz AIFF ({reason})? [y/N]: "
+    prompt = f"Downconvert {path} in place to 16-bit / at most 48000 Hz AIFF ({reason})? [y/N]: "
     return input(prompt).strip().lower() in {"y", "yes"}
 
 
@@ -746,7 +777,7 @@ def main() -> int:
         )
         downconvert_message = (
             f"AIFF downconversion complete. Normalized {downconverted} AIFF file(s) "
-            + "to 16-bit / 48000 Hz."
+            + "to 16-bit / at most 48000 Hz."
         )
         print(downconvert_message)
 
