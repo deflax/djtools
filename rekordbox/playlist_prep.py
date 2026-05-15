@@ -153,6 +153,15 @@ def remove_empty_directories(root: Path, assume_yes: bool) -> int:
     removed = 0
     directories = sorted((path for path in root.rglob("*") if path.is_dir()), reverse=True)
     for path in directories:
+        try:
+            is_empty = next(path.iterdir(), None) is None
+        except OSError as error:
+            print(f"Failed to inspect directory {path}: {error}", file=sys.stderr)
+            continue
+
+        if not is_empty:
+            continue
+
         if not assume_yes and not confirm_empty_directory_removal(path):
             print(f"Kept empty directory {path}.")
             continue
@@ -711,34 +720,42 @@ def strip_replaygain_files(
 
 def confirm_clean_deletion(path: Path, reason: str) -> bool:
     prompt = f"Clean by deleting {path} ({reason})? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
 
 
 def confirm_clean_rename(source: Path, destination: Path) -> bool:
     prompt = f"Clean by renaming {source} to {destination}? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
 
 
 def confirm_empty_directory_removal(path: Path) -> bool:
     prompt = f"Clean by removing empty directory {path}? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
 
 
 def confirm_aiff_conversion(source: Path, destination: Path) -> bool:
     source_kind = source.suffix.lower().lstrip(".").upper()
     prompt = f"Convert {source} to AIFF at {destination} and delete the original {source_kind} after success? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
 
 
 def confirm_downconvert(path: Path, reason: str) -> bool:
     prompt = f"Downconvert {path} in place to 16-bit / at most 48000 Hz AIFF ({reason})? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
 
 
 def confirm_replaygain_strip(path: Path, tags: list[str]) -> bool:
     tag_list = ", ".join(tags)
     prompt = f"Remove ReplayGain tags from {path} ({tag_list})? [y/N]: "
-    return input(prompt).strip().lower() in {"y", "yes"}
+    return confirm_yes(prompt)
+
+
+def confirm_yes(prompt: str) -> bool:
+    try:
+        return input(prompt).strip().lower() in {"y", "yes"}
+    except EOFError:
+        print()
+        return False
 
 
 def main() -> int:
