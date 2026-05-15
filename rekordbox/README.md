@@ -1,31 +1,35 @@
 # Playlist Preparation Tool
 
-`playlist_prep.py` is a Python utility for scanning a directory tree of audio files in two phases:
-
-1. Convert `.flac` files to `.aiff` in the same directory.
-2. Review certain files for deletion.
+`playlist_prep.py` is a Python utility for scanning a directory tree of audio files and running the operations you explicitly select.
 
 ## What it does
 
-### Phase 1: Conversion
+### AIFF conversion
 
-- Recursively finds `.flac` files.
+- Recursively finds `.flac` and `.wav` files when `--aiff` is selected.
 - Prompts before each conversion by default.
-- Converts each FLAC to an AIFF file in the same folder.
+- Converts each source file to an `.aiff` file in the same folder.
 - Uses a temporary AIFF file first, then moves it into place.
-- Deletes the original FLAC only after a successful conversion.
-- Skips a FLAC if the destination AIFF already exists.
+- Skips a source file if the destination AIFF already exists.
+- Deletes the original source only after a successful conversion.
 - Copies metadata on a best-effort basis with `ffmpeg` and writes ID3v2 tags into the AIFF output.
 - Always verifies FLAC vs. AIFF tags with `ffprobe` before deleting the original FLAC.
+- Attempts metadata verification for WAV conversions when tags can be read.
 
-### Phase 2: Deletion review
+### AIFF downconversion
 
-- Prompts before deleting flagged files by default.
-- Renames `.aif` files to `.aiff`.
-- Deletes files whose extensions are not `.wav`, `.aiff`, `.mp3`, or `.flac`.
-- Flags `.mp3` files with bitrate below `320000` bps.
-- Flags `.wav` and `.aiff` files with sample rate above `48000` Hz.
-- Removes directories that are empty after the deletion-review phase finishes.
+- Recursively finds `.aiff` files when `--down` is selected.
+- Prompts before each in-place normalization by default.
+- Normalizes AIFF files to 16-bit / 48000 Hz when their bit depth is above 16-bit, their sample rate is above 48000 Hz, or either value cannot be inspected.
+- Writes a temporary AIFF output first and replaces the original only after a successful regular output is produced and inspected.
+
+### Clean review
+
+- Reviews deletion and rename candidates when `--clean` is selected.
+- Prompts before deleting flagged files, renaming `.aif` files, or removing empty directories by default.
+- Renames `.aif` files to `.aiff` unless the target `.aiff` file already exists.
+- Deletes files whose extensions are not `.wav`, `.aiff`, `.mp3`, `.flac`, or `.aif`.
+- Removes directories that are empty after the clean operation finishes when confirmed or `--yes` is used.
 
 ## Requirements
 
@@ -33,7 +37,7 @@
 - `ffmpeg`
 - `ffprobe`
 
-Both `ffmpeg` and `ffprobe` must be available in your `PATH`, unless you pass custom paths with command-line options.
+Both `ffmpeg` and `ffprobe` must be available in your `PATH` for `--aiff` and `--down`, unless you pass custom paths with command-line options. `--clean` does not require either tool.
 
 ## Installation
 
@@ -63,64 +67,67 @@ ffprobe -version
 
 ## Usage
 
-Run both phases in order:
+Select at least one operation. Running with only `root` prints an argparse error instead of modifying files.
+
+Convert FLAC and WAV files to AIFF:
 
 ```bash
-playlist_prep "/path/to/audio"
+playlist_prep "/path/to/audio" --aiff
 ```
 
-Run only the conversion phase:
+Normalize high-resolution AIFF files to 16-bit / 48000 Hz in place:
 
 ```bash
-playlist_prep "/path/to/audio" --phase convert
+playlist_prep "/path/to/audio" --down
 ```
 
-Run only the deletion-review phase:
+Review unwanted file extensions, `.aif` renames, and empty directories:
 
 ```bash
-playlist_prep "/path/to/audio" --phase delete
+playlist_prep "/path/to/audio" --clean
 ```
 
-Skip conversion prompts:
+Run multiple operations in order:
 
 ```bash
-playlist_prep "/path/to/audio" --yes-convert
+playlist_prep "/path/to/audio" --aiff --down --clean
 ```
 
-Skip deletion prompts:
+Skip prompts for all selected operations:
 
 ```bash
-playlist_prep "/path/to/audio" --yes
+playlist_prep "/path/to/audio" --aiff --down --clean --yes
 ```
 
-Skip both conversion and deletion prompts:
+Use custom `ffmpeg` or `ffprobe` binaries:
 
 ```bash
-playlist_prep "/path/to/audio" --yes-convert --yes
+playlist_prep "/path/to/audio" --aiff --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/custom/bin/ffprobe"
 ```
 
 ## Command-line options
 
 - `root` - root directory to scan recursively. Defaults to the current directory.
-- `--phase {all,convert,delete}` - choose which phase to run. Default is `all`.
+- `--aiff` - convert `.flac` and `.wav` files to `.aiff` in the same directory.
+- `--down` - normalize `.aiff` files above 16-bit or 48000 Hz, or with unknown bit depth/sample rate, to 16-bit / 48000 Hz in place.
+- `--clean` - review unwanted extensions, `.aif` renames, and empty directories.
 - `--ffmpeg` - path to the `ffmpeg` executable.
 - `--ffprobe` - path to the `ffprobe` executable.
-- `--yes-convert` - convert FLAC files without prompting.
-- `--yes` - delete flagged files without prompting.
+- `--yes` - run selected operations without prompting.
 
 ## Notes
 
-- AIFF output is written next to the original FLAC.
-- The script only deletes original FLAC files after a successful conversion.
-- If `ffprobe` cannot read a file, the script reports the error and moves on.
-- Bitrate checks are only applied to MP3 files.
-- Sample-rate checks are only applied to WAV and AIFF files.
-- `.aif` files are renamed to `.aiff` during deletion review unless the target `.aiff` file already exists.
-- Files with extensions other than `.wav`, `.aiff`, `.mp3`, and `.flac` are reviewed for deletion without using `ffprobe`.
-- Empty directories left behind after deletion review are removed automatically.
-- Metadata retention during FLAC to AIFF conversion is best-effort. Native AIFF tags are limited, so some fields may only survive in the AIFF ID3 chunk.
-- The script always compares source and converted tags. If differences are found, it keeps both the original FLAC and the new AIFF and reports the mismatches.
+- AIFF conversion output is written next to the source FLAC or WAV.
+- The script only deletes original FLAC and WAV files after successful conversion output is produced.
+- The script always compares source and converted tags for FLAC conversions. If differences are found, it keeps both the original FLAC and the new AIFF and reports the mismatches.
+- WAV metadata verification is best-effort. If useful tags can be read, they are compared before the original WAV is removed.
 - The metadata comparison ignores a small set of tool-generated fields such as `encoder`, `encoded_by`, `software`, and `creation_time`.
+- Downconversion uses a temporary output file and replaces the original AIFF only after successful output is produced and `ffprobe` confirms its bit depth and sample rate.
+- AIFF files with unknown bit depth or sample rate are treated as downconversion candidates, but the replacement output must still be verifiable.
+- If `ffprobe` cannot read a file, the script reports the error and moves on.
+- `.aif` files are renamed to `.aiff` during `--clean` unless the target `.aiff` file already exists.
+- Files with extensions other than `.wav`, `.aiff`, `.mp3`, `.flac`, and `.aif` are reviewed for deletion without using `ffprobe`.
+- Empty directories left behind after `--clean` are reviewed for removal.
 
 ## Troubleshooting
 
@@ -131,29 +138,24 @@ If the script exits immediately saying a required tool was not found, install `f
 You can also point to custom binaries:
 
 ```bash
-playlist_prep "/path/to/audio" --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/custom/bin/ffprobe"
+playlist_prep "/path/to/audio" --aiff --ffmpeg "/custom/bin/ffmpeg" --ffprobe "/custom/bin/ffprobe"
 ```
 
-### A FLAC file is skipped
+### A source file is skipped during AIFF conversion
 
-The script skips conversion when:
-
-- the destination `.aiff` file already exists, or
-- a temporary AIFF file from an earlier interrupted run is still present.
-
-In the second case, inspect the temporary file and remove it if you no longer need it.
+The script skips conversion when the destination `.aiff` file already exists.
 
 ### Metadata verification reports differences
 
-The script compares source and converted tags using `ffprobe` on every FLAC conversion.
+The script compares source and converted tags using `ffprobe` on every FLAC conversion and on WAV conversions when metadata can be read.
 
 When differences are found, the script:
 
 - keeps the converted AIFF,
-- keeps the original FLAC,
+- keeps the original source file,
 - prints the missing or changed tags.
 
-This is intentional, because AIFF metadata support is more limited than FLAC metadata support.
+This is intentional, because AIFF metadata support is more limited than FLAC or WAV metadata support.
 
 The comparison intentionally ignores a few tags that often change during transcoding even when the useful metadata is still intact, such as encoder or software-identification fields.
 
@@ -165,11 +167,9 @@ If `ffprobe` cannot read a file, the script prints an error and continues with t
 
 That can mean either:
 
-- no files matched the deletion rules, or
-- you answered no to every deletion prompt.
-
-Files can now match the deletion rules either because they are unsupported file types or because supported files exceeded the bitrate/sample-rate thresholds.
+- no files matched the clean deletion rules, or
+- you answered no to every clean deletion prompt.
 
 Files with the `.aif` extension are handled separately and renamed to `.aiff` instead of being deleted.
 
-Directories are only removed when they are empty after all rename and deletion operations are complete.
+Directories are only removed when they are empty after all selected operations are complete.
