@@ -15,6 +15,7 @@ from typing import TypedDict, cast
 
 
 SUPPORTED_RETAINED_EXTENSIONS = {".aif", ".flac", ".mp3", ".wav", ".aiff"}
+REPLAYGAIN_EXTENSIONS = {".aif", ".aiff", ".flac", ".mp3", ".wav"}
 MAX_SAMPLE_RATE = 48_000
 TARGET_BITS_PER_SAMPLE = 16
 IGNORED_METADATA_KEYS = {
@@ -42,6 +43,7 @@ class Config:
     root: str
     aiff: bool
     down: bool
+    strip_replaygain: bool
     clean: bool
     ffmpeg: str
     ffprobe: str
@@ -63,7 +65,7 @@ def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         description=(
             "Prepare audio files by running explicitly selected AIFF conversion, "
-            "AIFF downconversion, and cleanup operations."
+            "AIFF downconversion, ReplayGain stripping, and cleanup operations."
         )
     )
     _ = parser.add_argument(
@@ -88,6 +90,11 @@ def parse_args() -> Config:
         help="Review unwanted extensions, .aif renames, and empty directories.",
     )
     _ = parser.add_argument(
+        "--strip-replaygain",
+        action="store_true",
+        help="Remove ReplayGain metadata tags from supported audio files without re-encoding audio.",
+    )
+    _ = parser.add_argument(
         "--ffmpeg",
         default="ffmpeg",
         help="Path to the ffmpeg executable. Defaults to 'ffmpeg'.",
@@ -107,14 +114,16 @@ def parse_args() -> Config:
 
     aiff = bool_arg(namespace_values, "aiff", False)
     down = bool_arg(namespace_values, "down", False)
+    strip_replaygain = bool_arg(namespace_values, "strip_replaygain", False)
     clean = bool_arg(namespace_values, "clean", False)
-    if not aiff and not down and not clean:
-        parser.error("select at least one operation: --aiff, --down, or --clean")
+    if not aiff and not down and not strip_replaygain and not clean:
+        parser.error("select at least one operation: --aiff, --down, --strip-replaygain, or --clean")
 
     return Config(
         root=string_arg(namespace_values, "root", "."),
         aiff=aiff,
         down=down,
+        strip_replaygain=strip_replaygain,
         clean=clean,
         ffmpeg=string_arg(namespace_values, "ffmpeg", "ffmpeg"),
         ffprobe=string_arg(namespace_values, "ffprobe", "ffprobe"),
@@ -130,13 +139,13 @@ def ensure_tool(name: str, configured_path: str) -> None:
 def iter_audio_files(root: Path, suffixes: Iterable[str]) -> Iterable[Path]:
     wanted = {suffix.lower() for suffix in suffixes}
     for path in root.rglob("*"):
-        if path.is_file() and path.suffix.lower() in wanted:
+        if not path.is_symlink() and path.is_file() and path.suffix.lower() in wanted:
             yield path
 
 
 def iter_unsupported_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*"):
-        if path.is_file() and path.suffix.lower() not in SUPPORTED_RETAINED_EXTENSIONS:
+        if not path.is_symlink() and path.is_file() and path.suffix.lower() not in SUPPORTED_RETAINED_EXTENSIONS:
             yield path
 
 
@@ -253,7 +262,7 @@ def load_probe_payload(raw_output: str) -> ProbePayload:
     return {"streams": streams}
 
 
-def read_tags(path: Path, ffprobe_bin: str) -> dict[str, str]:
+def read_format_tags(path: Path, ffprobe_bin: str) -> dict[str, str]:
     command = [
         ffprobe_bin,
         "-v",
@@ -274,11 +283,15 @@ def read_tags(path: Path, ffprobe_bin: str) -> dict[str, str]:
     if tags is None:
         return {}
 
-    normalized: dict[str, str] = {}
+    preserved: dict[str, str] = {}
     for key, value in tags.items():
         if isinstance(value, str):
-            normalized[key.lower()] = value
-    return normalized
+            preserved[key] = value
+    return preserved
+
+
+def read_tags(path: Path, ffprobe_bin: str) -> dict[str, str]:
+    return {key.lower(): value for key, value in read_format_tags(path, ffprobe_bin).items()}
 
 
 def compare_tags(source: dict[str, str], destination: dict[str, str]) -> list[str]:
@@ -303,19 +316,23 @@ def choose_pcm_codec(metadata: AudioMetadata) -> str:
     return "pcm_s16be"
 
 
-def create_temporary_aiff_path(destination: Path) -> Path:
+def create_temporary_output_path(destination: Path, suffix: str) -> Path:
     descriptor, name = tempfile.mkstemp(
         prefix=f"{destination.stem}.",
-        suffix=".__tmp__.aiff",
+        suffix=suffix,
         dir=destination.parent,
     )
     os.close(descriptor)
     return Path(name)
 
 
+def create_temporary_aiff_path(destination: Path) -> Path:
+    return create_temporary_output_path(destination, ".__tmp__.aiff")
+
+
 def ensure_regular_output(path: Path, description: str) -> None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
-        raise RuntimeError(f"{description} produced no usable AIFF output")
+        raise RuntimeError(f"{description} produced no usable output")
 
 
 def convert_to_aiff_files(
@@ -567,6 +584,100 @@ def downconvert_aiff_files(
     return downconverted
 
 
+def is_replaygain_tag(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    return normalized == "replaygain" or normalized.startswith("replaygain_")
+
+
+def replaygain_tags(path: Path, ffprobe_bin: str) -> list[str]:
+    return sorted(key for key in read_format_tags(path, ffprobe_bin) if is_replaygain_tag(key))
+
+
+def non_replaygain_tags(path: Path, ffprobe_bin: str) -> dict[str, str]:
+    return {
+        key.lower(): value
+        for key, value in read_format_tags(path, ffprobe_bin).items()
+        if not is_replaygain_tag(key)
+    }
+
+
+def verify_replaygain_strip(source_tags: dict[str, str], output: Path, ffprobe_bin: str) -> None:
+    remaining_tags = replaygain_tags(output, ffprobe_bin)
+    if remaining_tags:
+        remaining = ", ".join(remaining_tags)
+        raise RuntimeError(f"ReplayGain tags remain after stripping: {remaining}")
+
+    output_tags = non_replaygain_tags(output, ffprobe_bin)
+    differences = compare_tags(source_tags, output_tags)
+    if differences:
+        details = "; ".join(differences)
+        raise RuntimeError(f"non-ReplayGain metadata changed after stripping: {details}")
+
+
+def strip_replaygain_files(
+    root: Path,
+    ffmpeg_bin: str,
+    ffprobe_bin: str,
+    assume_yes: bool,
+) -> int:
+    stripped = 0
+    audio_files = sorted(iter_audio_files(root, REPLAYGAIN_EXTENSIONS))
+
+    if not audio_files:
+        print("No supported audio files found for ReplayGain stripping.")
+        return stripped
+
+    for path in audio_files:
+        try:
+            tags = replaygain_tags(path, ffprobe_bin)
+            source_tags = non_replaygain_tags(path, ffprobe_bin)
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+            print(f"Failed to inspect {path} for ReplayGain tags: {error}", file=sys.stderr)
+            continue
+
+        if not tags:
+            continue
+
+        if not assume_yes and not confirm_replaygain_strip(path, tags):
+            print(f"Kept ReplayGain tags on {path}.")
+            continue
+
+        temporary_output: Path | None = None
+        try:
+            temporary_output = create_temporary_output_path(path, f".__tmp__{path.suffix}")
+            command = [
+                ffmpeg_bin,
+                "-nostdin",
+                "-y",
+                "-i",
+                str(path),
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-map_metadata",
+                "0",
+            ]
+            for tag in tags:
+                command.extend(["-metadata", f"{tag}="])
+            command.append(str(temporary_output))
+
+            _ = subprocess.run(command, check=True)
+            ensure_regular_output(temporary_output, "ReplayGain stripping")
+            verify_replaygain_strip(source_tags, temporary_output, ffprobe_bin)
+
+            _ = temporary_output.replace(path)
+            stripped += 1
+            removed = ", ".join(tags)
+            print(f"Removed ReplayGain tags from {path}: {removed}.")
+        except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, RuntimeError) as error:
+            if temporary_output is not None and temporary_output.exists():
+                temporary_output.unlink()
+            print(f"Failed to strip ReplayGain tags from {path}: {error}", file=sys.stderr)
+
+    return stripped
+
+
 def confirm_clean_deletion(path: Path, reason: str) -> bool:
     prompt = f"Clean by deleting {path} ({reason})? [y/N]: "
     return input(prompt).strip().lower() in {"y", "yes"}
@@ -593,6 +704,12 @@ def confirm_downconvert(path: Path, reason: str) -> bool:
     return input(prompt).strip().lower() in {"y", "yes"}
 
 
+def confirm_replaygain_strip(path: Path, tags: list[str]) -> bool:
+    tag_list = ", ".join(tags)
+    prompt = f"Remove ReplayGain tags from {path} ({tag_list})? [y/N]: "
+    return input(prompt).strip().lower() in {"y", "yes"}
+
+
 def main() -> int:
     args = parse_args()
     root = Path(args.root).expanduser().resolve()
@@ -601,7 +718,7 @@ def main() -> int:
         print(f"Root path must be an existing directory: {root}", file=sys.stderr)
         return 1
 
-    if args.aiff or args.down:
+    if args.aiff or args.down or args.strip_replaygain:
         ensure_tool("ffmpeg", args.ffmpeg)
         ensure_tool("ffprobe", args.ffprobe)
 
@@ -632,6 +749,16 @@ def main() -> int:
             + "to 16-bit / 48000 Hz."
         )
         print(downconvert_message)
+
+    if args.strip_replaygain:
+        print(f"Starting ReplayGain metadata stripping in {root}...")
+        stripped = strip_replaygain_files(
+            root,
+            args.ffmpeg,
+            args.ffprobe,
+            args.yes,
+        )
+        print(f"ReplayGain stripping complete. Updated {stripped} file(s).")
 
     if args.clean:
         print(f"Starting clean operation in {root}...")
